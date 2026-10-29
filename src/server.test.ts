@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { io, type Socket } from "socket.io-client";
 import { startServer } from "./server.js";
@@ -15,6 +18,9 @@ function once<T>(socket: Socket, event: string): Promise<T> {
 
 test("broadcasts complete drawing strokes to other clients", async () => {
   const presentationId = "drawing-test";
+  const testDirectory = await mkdtemp(path.join(tmpdir(), "sldz-test-"));
+  const markdownPath = path.join(testDirectory, "slides.md");
+  await writeFile(markdownPath, "# Test\n\n---\n\n# Second\n");
   const server = await startServer({
     host: "127.0.0.1",
     port: 0,
@@ -22,7 +28,8 @@ test("broadcasts complete drawing strokes to other clients", async () => {
     title: "Test deck",
     slideCount: 2,
     html: "<!doctype html><title>test</title>",
-    cwd: process.cwd(),
+    cwd: testDirectory,
+    markdownPath,
   });
   const url = `http://127.0.0.1:${server.port}`;
   const indexResponse = await fetch(url);
@@ -30,6 +37,24 @@ test("broadcasts complete drawing strokes to other clients", async () => {
   assert.equal(indexResponse.status, 200);
   assert.match(indexHtml, /Test deck/);
   assert.match(indexHtml, new RegExp(`/p/${presentationId}#2`));
+
+  const markdownResponse = await fetch(`${url}/api/markdown?presentationId=${presentationId}`);
+  assert.match(await markdownResponse.text(), /# Second/);
+  const updateResponse = await fetch(`${url}/api/markdown`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentationId, markdown: "# Edited\n\n---\n\n# Second\n" }),
+  });
+  assert.equal(updateResponse.status, 200);
+  assert.match(await (await fetch(`${url}/p/${presentationId}`)).text(), /Edited/);
+
+  const imageForm = new FormData();
+  imageForm.append("presentationId", presentationId);
+  imageForm.append("slideIndex", "0");
+  imageForm.append("image", new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }), "test.png");
+  const imageResponse = await fetch(`${url}/api/images`, { method: "POST", body: imageForm });
+  assert.equal(imageResponse.status, 200);
+  assert.match(await readFile(markdownPath, "utf8"), /!\[test\]\(assets\//);
 
   const first = io(url, { auth: { presentationId }, transports: ["websocket"] });
   const second = io(url, { auth: { presentationId }, transports: ["websocket"] });
@@ -65,5 +90,6 @@ test("broadcasts complete drawing strokes to other clients", async () => {
     first.close();
     second.close();
     await server.close();
+    await rm(testDirectory, { recursive: true, force: true });
   }
 });

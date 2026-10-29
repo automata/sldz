@@ -64,6 +64,7 @@ const program = new Command()
       slideCount: slides.length,
       html,
       cwd: path.dirname(sourcePath),
+      markdownPath: sourcePath,
     });
 
     const browserHost = options.host === "0.0.0.0" || options.host === "::" ? "localhost" : options.host;

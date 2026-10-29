@@ -1,6 +1,6 @@
 # sldz
 
-A small Markdown slide generator/server with a collaborative drawing canvas and a private browser terminal for each client.
+A Markdown slide generator/server with collaborative vector drawing, private browser terminals, an embeddable web pane, and live Markdown editing.
 
 ## Run
 
@@ -29,6 +29,10 @@ Options:
 ```
 
 Navigation: arrow keys, space, Page Up/Down, Home, and End. Press `D` for the canvas, `T` for the terminal, and `F` for fullscreen.
+
+- Open the `◎` pane, enter a URL, and press Enter to embed a website (sites may opt out of iframe embedding).
+- Open `</>` to edit the source Markdown. Click it again or press `Cmd/Ctrl+S` to save and reload.
+- Drop image files directly onto the current slide to copy them into `assets/` and append Markdown image syntax to the source file.
 
 > **Security:** the share URL is a secret capability. Anyone with it can run shell commands in the Markdown file's directory. Do not expose the server to an untrusted network. Use `--host 127.0.0.1` for local-only use.
 

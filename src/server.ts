@@ -1,10 +1,15 @@
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import multer from "multer";
 import { Server } from "socket.io";
 import { createTerminal } from "./terminal.js";
+import { renderSlides } from "./markdown.js";
+import { renderDocument } from "./template.js";
 import type { DeckSession, Point, Stroke, TerminalProcess } from "./types.js";
 
 const require = createRequire(import.meta.url);
@@ -19,6 +24,7 @@ interface ServerOptions {
   slideCount: number;
   html: string;
   cwd: string;
+  markdownPath: string;
 }
 
 function escapeHtml(value: string): string {
@@ -90,12 +96,51 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   const xtermRoot = path.resolve(path.dirname(xtermEntry), "..");
   const perfectFreehandEntry = path.resolve(path.dirname(require.resolve("perfect-freehand")), "..", "esm", "index.mjs");
 
+  const assetsDirectory = path.join(options.cwd, "assets");
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+
+  app.use(express.json({ limit: "2mb" }));
   app.use("/assets", express.static(publicDirectory));
+  app.use("/p/assets", express.static(assetsDirectory));
   app.get("/assets/xterm/xterm.js", (_request, response) => response.sendFile(xtermEntry));
   app.get("/assets/xterm/xterm.css", (_request, response) => response.sendFile(path.join(xtermRoot, "css", "xterm.css")));
   app.get("/assets/xterm/addon-fit.js", (_request, response) => response.sendFile(require.resolve("@xterm/addon-fit")));
   app.get("/assets/perfect-freehand.js", (_request, response) => response.type("text/javascript").sendFile(perfectFreehandEntry));
-  app.get(`/p/${options.presentationId}`, (_request, response) => response.type("html").send(options.html));
+  app.get(`/p/${options.presentationId}`, async (_request, response) => {
+    const markdown = await readFile(options.markdownPath, "utf8");
+    response.type("html").send(renderDocument(options.title, renderSlides(markdown), options.presentationId));
+  });
+  app.get("/api/markdown", async (request, response) => {
+    if (request.query.presentationId !== options.presentationId) return response.status(403).json({ error: "Forbidden" });
+    return response.type("text/plain").send(await readFile(options.markdownPath, "utf8"));
+  });
+  app.put("/api/markdown", async (request, response) => {
+    if (request.body?.presentationId !== options.presentationId || typeof request.body?.markdown !== "string") {
+      return response.status(403).json({ error: "Forbidden" });
+    }
+    await writeFile(options.markdownPath, request.body.markdown);
+    return response.json({ ok: true });
+  });
+  app.post("/api/images", upload.single("image"), async (request, response) => {
+    if (request.body?.presentationId !== options.presentationId || !request.file?.mimetype.startsWith("image/")) {
+      return response.status(400).json({ error: "Invalid image upload" });
+    }
+    const original = path.basename(request.file.originalname).replace(/[^a-zA-Z0-9._-]/g, "-");
+    const filename = `${Date.now()}-${randomBytes(4).toString("hex")}-${original || "image"}`;
+    await mkdir(assetsDirectory, { recursive: true });
+    await writeFile(path.join(assetsDirectory, filename), request.file.buffer);
+
+    const markdown = await readFile(options.markdownPath, "utf8");
+    const sections = markdown.replace(/\r\n?/g, "\n").split(/^\s*---+\s*$/gm);
+    const nonEmptySections = sections.map((section, index) => section.trim() ? index : -1).filter((index) => index >= 0);
+    const requestedSlide = Number.parseInt(request.body.slideIndex, 10);
+    const sectionIndex = nonEmptySections[Math.max(0, Math.min(nonEmptySections.length - 1, requestedSlide || 0))];
+    const alt = path.basename(original, path.extname(original)).replace(/[\]\\]/g, "") || "image";
+    const imageMarkdown = `![${alt}](assets/${filename})`;
+    sections[sectionIndex] = `${sections[sectionIndex].trimEnd()}\n\n${imageMarkdown}\n`;
+    await writeFile(options.markdownPath, sections.join("\n\n---\n\n"));
+    return response.json({ url: `/p/assets/${encodeURIComponent(filename)}`, markdown: imageMarkdown, alt });
+  });
   const indexHtml = renderIndex(options.title, options.presentationId, options.slideCount);
   app.get(["/", "/index.html"], (_request, response) => response.type("html").send(indexHtml));
   app.use((_request, response) => response.status(404).send("Presentation not found"));

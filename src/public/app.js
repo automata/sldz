@@ -8,9 +8,15 @@ import { getStroke } from "/assets/perfect-freehand.js";
   const progressBar = document.getElementById("progress-bar");
   const drawWindow = document.getElementById("draw-window");
   const terminalWindow = document.getElementById("terminal-window");
+  const iframeWindow = document.getElementById("iframe-window");
   const terminalPanel = document.getElementById("terminal-panel");
   const drawToggle = document.getElementById("draw-toggle");
   const terminalToggle = document.getElementById("terminal-toggle");
+  const iframeToggle = document.getElementById("iframe-toggle");
+  const markdownEditToggle = document.getElementById("markdown-edit-toggle");
+  const markdownEditor = document.getElementById("markdown-editor");
+  const panes = { draw: drawWindow, terminal: terminalWindow, iframe: iframeWindow };
+  const paneToggles = { draw: drawToggle, terminal: terminalToggle, iframe: iframeToggle };
   const slideMaximize = document.getElementById("slide-maximize");
   const panePositionButton = document.getElementById("pane-position");
   let slideIndex = Math.max(0, Math.min(slides.length - 1, Number(location.hash.slice(1)) - 1 || 0));
@@ -42,6 +48,16 @@ import { getStroke } from "/assets/perfect-freehand.js";
       item.setAttribute("aria-expanded", "true");
       item.title = "Collapse nested items";
       const toggle = () => {
+        // Keep the original expanded content box height. The slide is centered,
+        // so allowing this box to shrink would move every Markdown item up or
+        // down whenever a nested list is toggled.
+        if (!content.dataset.verticalLayoutLocked) {
+          const height = content.getBoundingClientRect().height;
+          if (height > 0) {
+            content.style.height = `${Math.ceil(height)}px`;
+            content.dataset.verticalLayoutLocked = "true";
+          }
+        }
         nested.hidden = !nested.hidden;
         item.setAttribute("aria-expanded", String(!nested.hidden));
         item.title = nested.hidden ? "Expand nested items" : "Collapse nested items";
@@ -82,14 +98,25 @@ import { getStroke } from "/assets/perfect-freehand.js";
   }
 
   function updateMosaic() {
-    const drawDocked = !drawWindow.hidden && !drawWindow.classList.contains("is-detached");
-    const terminalDocked = !terminalWindow.hidden && !terminalWindow.classList.contains("is-detached");
-    document.body.classList.toggle("draw-docked", drawDocked);
-    document.body.classList.toggle("terminal-docked", terminalDocked);
-    document.body.classList.toggle("has-docked-pane", drawDocked || terminalDocked);
+    const docked = Object.entries(panes).filter(([, pane]) => !pane.hidden && !pane.classList.contains("is-detached"));
+    const iframeDocked = docked.some(([mode]) => mode === "iframe");
+    for (const [mode, pane] of Object.entries(panes)) {
+      const isDocked = docked.some(([, candidate]) => candidate === pane);
+      document.body.classList.toggle(`${mode}-docked`, isDocked);
+      pane.classList.toggle("is-docked", isDocked);
+      pane.style.removeProperty("--dock-start");
+      pane.style.removeProperty("--dock-size");
+    }
+    // Existing two-pane layout keeps its adjustable divider. Layouts that
+    // include the web pane use equal mosaic tiles.
+    if (iframeDocked) docked.forEach(([, pane], index) => {
+      pane.style.setProperty("--dock-start", `${index * 100 / docked.length}%`);
+      pane.style.setProperty("--dock-size", `${100 / docked.length}%`);
+    });
+    document.body.classList.toggle("has-docked-pane", docked.length > 0);
     document.body.classList.toggle("drawing-mode", !drawWindow.hidden);
     document.querySelectorAll(".pane-detach").forEach((button) => {
-      const pane = button.dataset.pane === "draw" ? drawWindow : terminalWindow;
+      const pane = panes[button.dataset.pane];
       const detached = pane.classList.contains("is-detached");
       button.textContent = detached ? "⊞" : "↗";
       button.setAttribute("aria-label", detached ? `Dock ${button.dataset.pane}` : `Detach ${button.dataset.pane}`);
@@ -103,12 +130,12 @@ import { getStroke } from "/assets/perfect-freehand.js";
 
   function setMaximized(mode) {
     const next = maximizedMode === mode ? null : mode;
-    if (next === "draw" && drawWindow.hidden) setPane("draw", true);
-    if (next === "terminal" && terminalWindow.hidden) setPane("terminal", true);
+    if (next && next !== "slide" && panes[next].hidden) setPane(next, true);
     maximizedMode = next;
     document.body.classList.toggle("maximized-slide", next === "slide");
     document.body.classList.toggle("maximized-draw", next === "draw");
     document.body.classList.toggle("maximized-terminal", next === "terminal");
+    document.body.classList.toggle("maximized-iframe", next === "iframe");
     slideMaximize.setAttribute("aria-pressed", String(next === "slide"));
     slideMaximize.firstChild.textContent = next === "slide" ? "❐" : "□";
     slideMaximize.title = next === "slide" ? "Restore slide" : "Maximize slide";
@@ -133,20 +160,20 @@ import { getStroke } from "/assets/perfect-freehand.js";
   }
 
   function toggleVerticalMaximize(mode) {
-    const pane = mode === "draw" ? drawWindow : terminalWindow;
+    const pane = panes[mode];
     if (maximizedMode === mode) setMaximized(mode);
     const active = pane.classList.toggle("is-vertical-maximized");
     updateVerticalMaximizeButton(mode, active);
     bringToFront(pane);
     requestAnimationFrame(() => {
       if (mode === "draw") resizeCanvas();
-      else fitTerminal();
+      if (mode === "terminal") fitTerminal();
     });
   }
 
   function setPane(mode, force) {
-    const pane = mode === "draw" ? drawWindow : terminalWindow;
-    const toggle = mode === "draw" ? drawToggle : terminalToggle;
+    const pane = panes[mode];
+    const toggle = paneToggles[mode];
     const open = force ?? pane.hidden;
     if (open && pane.hidden) {
       pane.classList.remove("is-detached", "is-vertical-maximized");
@@ -163,7 +190,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
   }
 
   function toggleDetach(mode) {
-    const pane = mode === "draw" ? drawWindow : terminalWindow;
+    const pane = panes[mode];
     if (maximizedMode === mode) setMaximized(mode);
     const detach = !pane.classList.contains("is-detached");
     if (detach) {
@@ -194,7 +221,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
       }
       event.preventDefault();
       // Dragging the thin top strip detaches a docked tile automatically.
-      if (!pane.classList.contains("is-detached")) toggleDetach(pane === drawWindow ? "draw" : "terminal");
+      if (!pane.classList.contains("is-detached")) toggleDetach(Object.entries(panes).find(([, candidate]) => candidate === pane)[0]);
       const rect = pane.getBoundingClientRect();
       pane.style.left = `${rect.left}px`;
       pane.style.top = `${rect.top}px`;
@@ -303,9 +330,11 @@ import { getStroke } from "/assets/perfect-freehand.js";
 
   makeMovable(drawWindow);
   makeMovable(terminalWindow);
+  makeMovable(iframeWindow);
   document.querySelectorAll(".pane-resizer").forEach(makeResizable);
   drawToggle.addEventListener("click", () => setPane("draw"));
   terminalToggle.addEventListener("click", () => setPane("terminal"));
+  iframeToggle.addEventListener("click", () => setPane("iframe"));
   document.querySelectorAll(".pane-close").forEach((button) => button.addEventListener("click", () => setPane(button.dataset.pane, false)));
   document.querySelectorAll(".pane-detach").forEach((button) => button.addEventListener("click", () => toggleDetach(button.dataset.pane)));
   document.querySelectorAll(".pane-maximize").forEach((button) => button.addEventListener("click", () => setMaximized(button.dataset.pane)));
@@ -327,7 +356,83 @@ import { getStroke } from "/assets/perfect-freehand.js";
     else document.documentElement.requestFullscreen();
   });
 
+  document.getElementById("iframe-address").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = document.getElementById("iframe-url");
+    let url = input.value.trim();
+    if (!url) return;
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = `https://${url}`;
+    input.value = url;
+    document.getElementById("web-iframe").src = url;
+  });
+
+  let markdownEditing = false;
+  async function toggleMarkdownEditing(force) {
+    const editing = force ?? !markdownEditing;
+    if (editing === markdownEditing) return;
+    if (editing) {
+      const response = await fetch(`/api/markdown?presentationId=${encodeURIComponent(config.presentationId)}`);
+      if (!response.ok) throw new Error("Unable to load Markdown");
+      markdownEditor.value = await response.text();
+      markdownEditor.hidden = false;
+      markdownEditing = true;
+      document.body.classList.add("markdown-editing");
+      markdownEditToggle.setAttribute("aria-pressed", "true");
+      markdownEditToggle.title = "Save Markdown";
+      markdownEditor.focus();
+      return;
+    }
+    markdownEditToggle.disabled = true;
+    const response = await fetch("/api/markdown", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ presentationId: config.presentationId, markdown: markdownEditor.value }),
+    });
+    if (!response.ok) throw new Error("Unable to save Markdown");
+    location.reload();
+  }
+  markdownEditToggle.addEventListener("click", () => toggleMarkdownEditing().catch((error) => alert(error.message)));
+
+  deck.addEventListener("dragover", (event) => {
+    if (![...event.dataTransfer.items].some((item) => item.kind === "file" && item.type.startsWith("image/"))) return;
+    event.preventDefault();
+    deck.classList.add("is-image-drop-target");
+  });
+  deck.addEventListener("dragleave", (event) => {
+    if (!deck.contains(event.relatedTarget)) deck.classList.remove("is-image-drop-target");
+  });
+  deck.addEventListener("drop", async (event) => {
+    const images = [...event.dataTransfer.files].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    event.preventDefault();
+    deck.classList.remove("is-image-drop-target");
+    const content = slides[slideIndex].querySelector(".slide-content");
+    for (const image of images) {
+      const form = new FormData();
+      form.append("presentationId", config.presentationId);
+      form.append("slideIndex", String(slideIndex));
+      form.append("image", image);
+      const response = await fetch("/api/images", { method: "POST", body: form });
+      if (!response.ok) continue;
+      const result = await response.json();
+      const figure = document.createElement("figure");
+      figure.className = "markdown-image";
+      const element = document.createElement("img");
+      element.src = result.url;
+      element.alt = result.alt;
+      const caption = document.createElement("figcaption");
+      caption.textContent = result.markdown;
+      figure.append(element, caption);
+      content.append(figure);
+    }
+  });
+
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && markdownEditing) {
+      event.preventDefault();
+      toggleMarkdownEditing(false).catch((error) => alert(error.message));
+      return;
+    }
     const editing = event.target.closest?.("input, textarea, button, [role='button'], .markdown-collapsible-item, .xterm");
     if (editing) return;
     if (["ArrowRight", "ArrowDown", "PageDown", " "].includes(event.key)) {
@@ -344,6 +449,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
       else {
         setPane("draw", false);
         setPane("terminal", false);
+        setPane("iframe", false);
       }
     }
   });
@@ -617,7 +723,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
         cursorBlink: true,
         convertEol: false,
         scrollOnUserInput: true,
-        fontFamily: '"SFMono-Regular", "NerdSymbols", "Apple Color Emoji", "Segoe UI Emoji", Consolas, "Liberation Mono", monospace',
+        fontFamily: '"0xProto Nerd Font Mono", "NerdSymbols", "Apple Color Emoji", "Segoe UI Emoji", monospace',
         fontSize: terminalFontSizes[terminalFontSizeIndex],
         theme: { background: "#000000", foreground: "#d0d0d0", cursor: "#ffffff", selectionBackground: "#444444" },
       });
