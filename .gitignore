@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.sldz/
+*.slides.html
+.DS_Store
