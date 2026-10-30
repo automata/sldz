@@ -11,7 +11,7 @@ function escapeHtml(value: string): string {
 
 export function renderDocument(title: string, slides: Slide[], presentationId: string): string {
   const sections = slides.map((slide, index) =>
-    `<section class="slide${index === 0 ? " is-active" : ""}" data-slide="${index}" aria-hidden="${index !== 0}">\n<div class="slide-content">${slide.html}</div>\n</section>`,
+    `<section class="slide${index === 0 ? " is-active" : ""}" data-slide="${index}" aria-hidden="${index !== 0}">\n<div class="slide-stage"><div class="slide-content">${slide.html}</div></div>\n</section>`,
   ).join("\n");
 
   const config = JSON.stringify({ presentationId, slideCount: slides.length }).replace(/</g, "\\u003c");
@@ -29,12 +29,31 @@ export function renderDocument(title: string, slides: Slide[], presentationId: s
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <main id="deck" class="deck">${sections}<textarea id="markdown-editor" hidden spellcheck="false" aria-label="Markdown editor"></textarea></main>
+  <main id="deck" class="deck">${sections}<textarea id="markdown-editor" hidden spellcheck="false" aria-label="Markdown editor"></textarea>
+    <div id="slide-drawing-controls" class="slide-drawing-controls" hidden>
+      <button class="overlay-color-swatch is-selected" type="button" data-color="#ffffff" title="White" aria-label="White" aria-pressed="true"></button>
+      <button class="overlay-color-swatch" type="button" data-color="#f5d547" title="Yellow" aria-label="Yellow" aria-pressed="false"></button>
+      <button class="overlay-color-swatch" type="button" data-color="#ff984f" title="Orange" aria-label="Orange" aria-pressed="false"></button>
+      <button class="overlay-color-swatch" type="button" data-color="#62a8ff" title="Blue" aria-label="Blue" aria-pressed="false"></button>
+      <button class="overlay-color-swatch" type="button" data-color="#84e39a" title="Light green" aria-label="Light green" aria-pressed="false"></button>
+      <button class="overlay-color-swatch" type="button" data-color="#ff8585" title="Light red" aria-label="Light red" aria-pressed="false"></button>
+      <button class="overlay-brush-size" data-level="normal" type="button" title="Brush size: normal" aria-label="Brush size: normal">●</button>
+      <button class="overlay-clear-canvas" type="button" title="Clear all drawing" aria-label="Clear all drawing">⌫</button>
+      <button class="overlay-undo-drawing" type="button" title="Undo last stroke" aria-label="Undo last stroke">↶</button>
+      <button class="overlay-eraser-toggle" type="button" title="Eraser" aria-label="Eraser" aria-pressed="false">▱</button>
+      <button id="overlay-drawing-close" type="button" title="Close overlay drawing" aria-label="Close overlay drawing">×</button>
+    </div>
+  </main>
   <div class="progress"><span id="progress-bar"></span></div>
-  <div class="slide-number"><span id="current-slide">1</span> / ${slides.length}</div>
+  <div class="slide-number" role="group" aria-label="Slide navigation">
+    <button id="previous-slide" type="button" title="Previous slide" aria-label="Previous slide">←</button>
+    <span><span id="current-slide">1</span> / ${slides.length}</span>
+    <button id="next-slide" type="button" title="Next slide" aria-label="Next slide">→</button>
+  </div>
 
   <nav class="tools" aria-label="Presentation tools">
     <button id="draw-toggle" type="button" title="Collaborative drawing (D)" aria-label="Drawing" aria-pressed="false">✎</button>
+    <button id="slide-drawing-toggle" type="button" title="Draw over slide" aria-label="Draw over slide" aria-pressed="false">◫</button>
     <button id="terminal-toggle" type="button" title="Terminal (T)" aria-label="Terminal" aria-pressed="false">›_</button>
     <button id="iframe-toggle" type="button" title="Web pane" aria-label="Web pane" aria-pressed="false">◎</button>
     <button id="markdown-edit-toggle" type="button" title="Edit Markdown" aria-label="Edit Markdown" aria-pressed="false">&lt;/&gt;</button>

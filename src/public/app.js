@@ -5,12 +5,16 @@ import { getStroke } from "/assets/perfect-freehand.js";
   const slides = [...document.querySelectorAll(".slide")];
   const deck = document.getElementById("deck");
   const currentLabel = document.getElementById("current-slide");
+  const previousSlideButton = document.getElementById("previous-slide");
+  const nextSlideButton = document.getElementById("next-slide");
   const progressBar = document.getElementById("progress-bar");
   const drawWindow = document.getElementById("draw-window");
+  const drawPanel = document.getElementById("draw-panel");
   const terminalWindow = document.getElementById("terminal-window");
   const iframeWindow = document.getElementById("iframe-window");
   const terminalPanel = document.getElementById("terminal-panel");
   const drawToggle = document.getElementById("draw-toggle");
+  const slideDrawingToggle = document.getElementById("slide-drawing-toggle");
   const terminalToggle = document.getElementById("terminal-toggle");
   const iframeToggle = document.getElementById("iframe-toggle");
   const markdownEditToggle = document.getElementById("markdown-edit-toggle");
@@ -25,7 +29,23 @@ import { getStroke } from "/assets/perfect-freehand.js";
   let panePositionIndex = 0;
   let paneZIndex = 30;
   let maximizedMode = null;
+  let drawingOverSlide = false;
+  let repaintDrawing = () => {};
+  let positionDrawingOverlay = () => {};
   document.body.classList.add("panes-right");
+
+  function resizeSlideStages() {
+    const scale = Math.max(0.01, Math.min(deck.clientWidth / 1600, deck.clientHeight / 900));
+    const width = deck.clientWidth / scale;
+    const height = deck.clientHeight / scale;
+    document.querySelectorAll(".slide-stage").forEach((stage) => {
+      stage.style.setProperty("--slide-scale", String(scale));
+      stage.style.setProperty("--slide-stage-width", `${width}px`);
+      stage.style.setProperty("--slide-stage-height", `${height}px`);
+    });
+  }
+  new ResizeObserver(resizeSlideStages).observe(deck);
+  resizeSlideStages();
 
   function showSlide(next, updateHash = true) {
     slideIndex = Math.max(0, Math.min(slides.length - 1, next));
@@ -35,8 +55,12 @@ import { getStroke } from "/assets/perfect-freehand.js";
       slide.setAttribute("aria-hidden", String(!active));
     });
     currentLabel.textContent = String(slideIndex + 1);
+    previousSlideButton.disabled = slideIndex === 0;
+    nextSlideButton.disabled = slideIndex === slides.length - 1;
     progressBar.style.width = `${((slideIndex + 1) / slides.length) * 100}%`;
     if (updateHash) history.replaceState(null, "", `#${slideIndex + 1}`);
+    positionDrawingOverlay();
+    repaintDrawing();
   }
 
   function makeMarkdownCollapsible(content) {
@@ -48,16 +72,6 @@ import { getStroke } from "/assets/perfect-freehand.js";
       item.setAttribute("aria-expanded", "true");
       item.title = "Collapse nested items";
       const toggle = () => {
-        // Keep the original expanded content box height. The slide is centered,
-        // so allowing this box to shrink would move every Markdown item up or
-        // down whenever a nested list is toggled.
-        if (!content.dataset.verticalLayoutLocked) {
-          const height = content.getBoundingClientRect().height;
-          if (height > 0) {
-            content.style.height = `${Math.ceil(height)}px`;
-            content.dataset.verticalLayoutLocked = "true";
-          }
-        }
         nested.hidden = !nested.hidden;
         item.setAttribute("aria-expanded", String(!nested.hidden));
         item.title = nested.hidden ? "Expand nested items" : "Collapse nested items";
@@ -75,13 +89,219 @@ import { getStroke } from "/assets/perfect-freehand.js";
     });
   }
 
+  const imageLayout = { images: {} };
+  let selectedFigure = null;
+  function imageLayoutKey(figure, index) {
+    const image = figure.querySelector("img");
+    const figures = [...slides[index].querySelectorAll("figure.markdown-image")];
+    const sameSource = figures.filter((candidate) => candidate.querySelector("img")?.getAttribute("src") === image.getAttribute("src"));
+    return `${index}:${image.getAttribute("src")}:${sameSource.indexOf(figure)}`;
+  }
+
+  function applyImagePosition(figure, position) {
+    if (!position) return;
+    figure.classList.add("is-positioned");
+    figure.style.left = `calc(50% - 800px + ${position.x * 1600}px)`;
+    figure.style.top = `calc(50% - 450px + ${position.y * 900}px)`;
+    if (position.width) figure.style.width = `${position.width * 1600}px`;
+  }
+
+  function selectFigure(figure) {
+    selectedFigure?.classList.remove("is-selected");
+    selectedFigure = figure;
+    figure?.classList.add("is-selected");
+    figure?.focus({ preventScroll: true });
+  }
+
+  function ensureFigurePositioned(figure, index) {
+    const slideRect = slides[index].querySelector(".slide-stage").getBoundingClientRect();
+    const figureRect = figure.getBoundingClientRect();
+    return { slideRect, figureRect };
+  }
+
+  function saveImageLayout() {
+    fetch("/api/layout", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ presentationId: config.presentationId, images: imageLayout.images }),
+    }).catch(() => undefined);
+  }
+
+  async function deleteSelectedFigure() {
+    if (!selectedFigure) return;
+    const figure = selectedFigure;
+    const key = figure.dataset.layoutKey;
+    const src = figure.querySelector("img")?.getAttribute("src");
+    const slide = Number(figure.dataset.slideIndex);
+    if (!src) return;
+    const response = await fetch("/api/images", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ presentationId: config.presentationId, slideIndex: slide, src }),
+    });
+    if (!response.ok) return;
+    delete imageLayout.images[key];
+    selectedFigure = null;
+    figure.remove();
+    saveImageLayout();
+  }
+
+  function registerDraggableFigure(figure, index, assignedKey = imageLayoutKey(figure, index)) {
+    const key = assignedKey;
+    const stage = slides[index].querySelector(".slide-stage");
+    const stageRect = stage.getBoundingClientRect();
+    const initialRect = figure.getBoundingClientRect();
+    figure.dataset.layoutKey = key;
+    figure.dataset.slideIndex = String(index);
+    figure.setAttribute("tabindex", "0");
+    figure.querySelector("img")?.setAttribute("draggable", "false");
+    stage.append(figure);
+    const stageScale = stageRect.width / stage.clientWidth;
+    const stageOffsetX = (stage.clientWidth - 1600) / 2;
+    const stageOffsetY = (stage.clientHeight - 900) / 2;
+    const initialPosition = imageLayout.images[key] ?? {
+      x: ((initialRect.left - stageRect.left) / stageScale - stageOffsetX) / 1600,
+      y: ((initialRect.top - stageRect.top) / stageScale - stageOffsetY) / 900,
+      width: Math.max(0.05, Math.min(1, initialRect.width ? initialRect.width / stageScale / 1600 : 0.4)),
+    };
+    imageLayout.images[key] = initialPosition;
+    applyImagePosition(figure, initialPosition);
+    const resizeHandles = ["n", "ne", "e", "se", "s", "sw", "w", "nw"].map((direction) => {
+      const handle = document.createElement("span");
+      handle.className = "markdown-image-resizer";
+      handle.dataset.direction = direction;
+      handle.setAttribute("aria-hidden", "true");
+      figure.append(handle);
+      return handle;
+    });
+    let drag = null;
+    let resize = null;
+
+    figure.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || drawingOverSlide || event.target.closest(".markdown-image-resizer")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectFigure(figure);
+      const { figureRect } = ensureFigurePositioned(figure, index);
+      drag = { id: event.pointerId, offsetX: event.clientX - figureRect.left, offsetY: event.clientY - figureRect.top };
+      figure.setPointerCapture(event.pointerId);
+      figure.classList.add("is-dragging");
+    });
+    figure.addEventListener("pointermove", (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      event.preventDefault();
+      const stage = slides[index].querySelector(".slide-stage");
+      const slideRect = stage.getBoundingClientRect();
+      const figureRect = figure.getBoundingClientRect();
+      const scale = slideRect.width / stage.clientWidth;
+      const offsetX = (stage.clientWidth - 1600) / 2;
+      const offsetY = (stage.clientHeight - 900) / 2;
+      const left = Math.max(0, Math.min(slideRect.width - figureRect.width, event.clientX - slideRect.left - drag.offsetX)) / scale;
+      const top = Math.max(0, Math.min(slideRect.height - figureRect.height, event.clientY - slideRect.top - drag.offsetY)) / scale;
+      const x = (left - offsetX) / 1600;
+      const y = (top - offsetY) / 900;
+      const width = figureRect.width / scale / 1600;
+      applyImagePosition(figure, { x, y, width });
+      imageLayout.images[key] = { x, y, width };
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      if (figure.hasPointerCapture(event.pointerId)) figure.releasePointerCapture(event.pointerId);
+      figure.classList.remove("is-dragging");
+      drag = null;
+      saveImageLayout();
+    };
+    figure.addEventListener("pointerup", finishDrag);
+    figure.addEventListener("pointercancel", finishDrag);
+
+    resizeHandles.forEach((resizeHandle) => {
+      resizeHandle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || drawingOverSlide) return;
+        event.preventDefault();
+        event.stopPropagation();
+        selectFigure(figure);
+        const { slideRect, figureRect } = ensureFigurePositioned(figure, index);
+        resize = {
+          id: event.pointerId,
+          direction: resizeHandle.dataset.direction,
+          startX: event.clientX,
+          startY: event.clientY,
+          width: figureRect.width,
+          height: figureRect.height,
+          slideWidth: slideRect.width,
+          position: { ...imageLayout.images[key] },
+        };
+        resizeHandle.setPointerCapture(event.pointerId);
+        figure.classList.add("is-resizing");
+      });
+      resizeHandle.addEventListener("pointermove", (event) => {
+        if (!resize || resize.id !== event.pointerId) return;
+        event.preventDefault();
+        const direction = resize.direction;
+        const factors = [];
+        if (direction.includes("e")) factors.push((resize.width + event.clientX - resize.startX) / resize.width);
+        if (direction.includes("w")) factors.push((resize.width - event.clientX + resize.startX) / resize.width);
+        if (direction.includes("s")) factors.push((resize.height + event.clientY - resize.startY) / resize.height);
+        if (direction.includes("n")) factors.push((resize.height - event.clientY + resize.startY) / resize.height);
+        const factor = factors.reduce((selected, candidate) => Math.abs(candidate - 1) > Math.abs(selected - 1) ? candidate : selected, factors[0]);
+        const stage = slides[index].querySelector(".slide-stage");
+        const offsetX = (stage.clientWidth - 1600) / 2;
+        const offsetY = (stage.clientHeight - 900) / 2;
+        const minX = -offsetX / 1600;
+        const maxX = (stage.clientWidth - offsetX) / 1600;
+        const minY = -offsetY / 900;
+        const maxY = (stage.clientHeight - offsetY) / 900;
+        const start = resize.position;
+        const startWidth = start.width;
+        const startHeight = resize.height / (resize.slideWidth / stage.clientWidth) / 900;
+        const startRight = start.x + startWidth;
+        const startBottom = start.y + startHeight;
+        let maxWidth = direction.includes("w") ? startRight - minX : maxX - start.x;
+        const maxHeight = direction.includes("n") ? startBottom - minY : maxY - start.y;
+        maxWidth = Math.min(maxWidth, maxHeight / startHeight * startWidth);
+        const width = Math.max(0.05, Math.min(maxWidth, startWidth * Math.max(0.01, factor)));
+        const height = startHeight * width / startWidth;
+        const x = direction.includes("w") ? startRight - width : start.x;
+        const y = direction.includes("n") ? startBottom - height : start.y;
+        applyImagePosition(figure, { x, y, width });
+        imageLayout.images[key] = { x, y, width };
+      });
+      const finishResize = (event) => {
+        if (!resize || resize.id !== event.pointerId) return;
+        if (resizeHandle.hasPointerCapture(event.pointerId)) resizeHandle.releasePointerCapture(event.pointerId);
+        figure.classList.remove("is-resizing");
+        resize = null;
+        saveImageLayout();
+      };
+      resizeHandle.addEventListener("pointerup", finishResize);
+      resizeHandle.addEventListener("pointercancel", finishResize);
+    });
+  }
+
+  async function initializeImageLayouts() {
+    try {
+      const response = await fetch(`/api/layout?presentationId=${encodeURIComponent(config.presentationId)}`);
+      if (response.ok) Object.assign(imageLayout.images, (await response.json()).images ?? {});
+    } catch { /* use default flow positions */ }
+    slides.forEach((slide, index) => {
+      const figures = [...slide.querySelectorAll("figure.markdown-image")];
+      const registrations = figures.map((figure) => [figure, imageLayoutKey(figure, index)]);
+      registrations.forEach(([figure, key]) => registerDraggableFigure(figure, index, key));
+    });
+    saveImageLayout();
+  }
+
   slides.forEach((slide) => makeMarkdownCollapsible(slide.querySelector(".slide-content")));
+  initializeImageLayouts();
   showSlide(slideIndex, false);
   addEventListener("hashchange", () => showSlide(Number(location.hash.slice(1)) - 1 || 0, false));
+  previousSlideButton.addEventListener("click", () => showSlide(slideIndex - 1));
+  nextSlideButton.addEventListener("click", () => showSlide(slideIndex + 1));
 
   // Finger swipes navigate on tablets while vertical scrolling remains available.
   let swipeStart = null;
   deck.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("figure.markdown-image") && !drawingOverSlide) selectFigure(null);
     if (event.pointerType === "touch") swipeStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
   });
   deck.addEventListener("pointerup", (event) => {
@@ -114,7 +334,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
       pane.style.setProperty("--dock-size", `${100 / docked.length}%`);
     });
     document.body.classList.toggle("has-docked-pane", docked.length > 0);
-    document.body.classList.toggle("drawing-mode", !drawWindow.hidden);
+    document.body.classList.toggle("drawing-mode", drawingOverSlide || !drawWindow.hidden);
     document.querySelectorAll(".pane-detach").forEach((button) => {
       const pane = panes[button.dataset.pane];
       const detached = pane.classList.contains("is-detached");
@@ -418,16 +638,21 @@ import { getStroke } from "/assets/perfect-freehand.js";
       const figure = document.createElement("figure");
       figure.className = "markdown-image";
       const element = document.createElement("img");
-      element.src = result.url;
+      element.src = result.src;
       element.alt = result.alt;
-      const caption = document.createElement("figcaption");
-      caption.textContent = result.markdown;
-      figure.append(element, caption);
+      figure.append(element);
       content.append(figure);
+      registerDraggableFigure(figure, slideIndex);
     }
   });
 
   document.addEventListener("keydown", (event) => {
+    const textEditing = event.target.closest?.("input, textarea, .xterm");
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedFigure && !textEditing) {
+      event.preventDefault();
+      deleteSelectedFigure();
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && markdownEditing) {
       event.preventDefault();
       toggleMarkdownEditing(false).catch((error) => alert(error.message));
@@ -459,40 +684,62 @@ import { getStroke } from "/assets/perfect-freehand.js";
   // Drawing
   const canvas = document.getElementById("drawing-canvas");
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const slideDrawingControls = document.getElementById("slide-drawing-controls");
+  positionDrawingOverlay = () => {
+    if (drawingOverSlide) slides[slideIndex].querySelector(".slide-stage").append(canvas);
+  };
+  function setSlideDrawingOverlay(active) {
+    drawingOverSlide = active;
+    slideDrawingToggle.setAttribute("aria-pressed", String(active));
+    slideDrawingToggle.title = active ? "Close slide drawing" : "Draw over slide";
+    canvas.classList.toggle("is-slide-overlay", active);
+    slideDrawingControls.hidden = !active;
+    document.body.classList.toggle("drawing-mode", active || !drawWindow.hidden);
+    if (active) positionDrawingOverlay();
+    else drawPanel.prepend(canvas);
+    repaintDrawing();
+  }
+  slideDrawingToggle.addEventListener("click", () => setSlideDrawingOverlay(!drawingOverSlide));
+  document.getElementById("overlay-drawing-close").addEventListener("click", () => setSlideDrawingOverlay(false));
   const strokeElements = new Map();
   const isIPad = /iPad/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const sizeLevels = ["normal", "medium", "large"];
   const brushWidths = [4, 8, 14];
-  const brushSizeButton = document.getElementById("brush-size");
-  const eraserButton = document.getElementById("eraser-toggle");
+  const brushSizeButtons = [...document.querySelectorAll("#brush-size, .overlay-brush-size")];
+  const eraserButtons = [...document.querySelectorAll("#eraser-toggle, .overlay-eraser-toggle")];
   let brushSizeIndex = 0;
   let eraserEnabled = false;
   let penColor = "#ffffff";
   function setEraser(enabled) {
     eraserEnabled = enabled;
-    eraserButton.setAttribute("aria-pressed", String(enabled));
-    eraserButton.title = enabled ? "Eraser active" : "Eraser";
-    eraserButton.setAttribute("aria-label", eraserButton.title);
+    for (const button of eraserButtons) {
+      button.setAttribute("aria-pressed", String(enabled));
+      button.title = enabled ? "Eraser active" : "Eraser";
+      button.setAttribute("aria-label", button.title);
+    }
   }
-  eraserButton.addEventListener("click", () => setEraser(true));
-  document.getElementById("undo-drawing").addEventListener("click", () => socket.emit("draw:undo"));
-  document.querySelectorAll(".color-swatch").forEach((swatch) => swatch.addEventListener("click", () => {
+  eraserButtons.forEach((button) => button.addEventListener("click", () => setEraser(true)));
+  document.querySelectorAll("#undo-drawing, .overlay-undo-drawing").forEach((button) => button.addEventListener("click", () => socket.emit("draw:undo")));
+  const colorSwatches = [...document.querySelectorAll(".color-swatch, .overlay-color-swatch")];
+  colorSwatches.forEach((swatch) => swatch.addEventListener("click", () => {
     penColor = swatch.dataset.color;
     setEraser(false);
-    document.querySelectorAll(".color-swatch").forEach((item) => {
-      const selected = item === swatch;
+    colorSwatches.forEach((item) => {
+      const selected = item.dataset.color === penColor;
       item.classList.toggle("is-selected", selected);
       item.setAttribute("aria-pressed", String(selected));
     });
   }));
-  brushSizeButton.addEventListener("click", () => {
+  brushSizeButtons.forEach((button) => button.addEventListener("click", () => {
     brushSizeIndex = (brushSizeIndex + 1) % brushWidths.length;
     const level = sizeLevels[brushSizeIndex];
-    brushSizeButton.dataset.level = level;
-    brushSizeButton.title = `Brush size: ${level}`;
-    brushSizeButton.setAttribute("aria-label", brushSizeButton.title);
-  });
-  document.getElementById("clear-canvas").addEventListener("click", () => socket.emit("draw:clear"));
+    brushSizeButtons.forEach((item) => {
+      item.dataset.level = level;
+      item.title = `Brush size: ${level}`;
+      item.setAttribute("aria-label", item.title);
+    });
+  }));
+  document.querySelectorAll("#clear-canvas, .overlay-clear-canvas").forEach((button) => button.addEventListener("click", () => socket.emit("draw:clear")));
   const strokes = new Map();
   const erasedDuringGesture = new Set();
   let activeStroke = null;
@@ -509,10 +756,24 @@ import { getStroke } from "/assets/perfect-freehand.js";
     // Store points in canvas CSS pixels, anchored at the top-left. Resizing the
     // pane then reveals or hides canvas space without stretching the drawing.
     return {
-      x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
-      y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
+      x: Math.max(0, Math.min(canvas.clientWidth, (event.clientX - rect.left) / rect.width * canvas.clientWidth)),
+      y: Math.max(0, Math.min(canvas.clientHeight, (event.clientY - rect.top) / rect.height * canvas.clientHeight)),
       pressure: event.pointerType === "pen" && Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : undefined,
     };
+  }
+
+  function pointForSurface(point) {
+    if (!drawingOverSlide) return point;
+    const offsetX = (canvas.clientWidth - 1600) / 2;
+    const offsetY = (canvas.clientHeight - 900) / 2;
+    return { x: (point.x - offsetX) / 1600, y: (point.y - offsetY) / 900, pressure: point.pressure };
+  }
+
+  function displayedPoint(point, stroke) {
+    if (!stroke.normalized) return point;
+    const offsetX = (canvas.clientWidth - 1600) / 2;
+    const offsetY = (canvas.clientHeight - 900) / 2;
+    return { x: offsetX + point.x * 1600, y: offsetY + point.y * 900, pressure: point.pressure };
   }
 
   function distanceToSegmentSquared(point, start, end) {
@@ -525,15 +786,23 @@ import { getStroke } from "/assets/perfect-freehand.js";
     return (point.x - x) ** 2 + (point.y - y) ** 2;
   }
 
+  function strokeIsVisible(stroke) {
+    const surface = stroke.surface ?? "canvas";
+    return drawingOverSlide
+      ? surface === "slide" && stroke.slideIndex === slideIndex
+      : surface === "canvas";
+  }
+
   function eraseAtPoint(point) {
     const eraserRadius = Math.max(8, brushWidths[brushSizeIndex] * 1.5);
     const removed = [];
     for (const [id, stroke] of strokes) {
-      if (stroke.mode === "erase" || erasedDuringGesture.has(id)) continue;
+      if (!strokeIsVisible(stroke) || stroke.mode === "erase" || erasedDuringGesture.has(id)) continue;
       const hitRadiusSquared = (eraserRadius + stroke.width / 2) ** 2;
-      const hit = stroke.points.length === 1
-        ? distanceToSegmentSquared(point, stroke.points[0], stroke.points[0]) <= hitRadiusSquared
-        : stroke.points.some((current, index) => index > 0 && distanceToSegmentSquared(point, stroke.points[index - 1], current) <= hitRadiusSquared);
+      const displayedPoints = stroke.points.map((candidate) => displayedPoint(candidate, stroke));
+      const hit = displayedPoints.length === 1
+        ? distanceToSegmentSquared(point, displayedPoints[0], displayedPoints[0]) <= hitRadiusSquared
+        : displayedPoints.some((current, index) => index > 0 && distanceToSegmentSquared(point, displayedPoints[index - 1], current) <= hitRadiusSquared);
       if (!hit) continue;
       erasedDuringGesture.add(id);
       removed.push(id);
@@ -555,10 +824,10 @@ import { getStroke } from "/assets/perfect-freehand.js";
   }
 
   function paintStroke(stroke) {
-    if (!stroke.points.length) return;
+    if (!stroke.points.length || !strokeIsVisible(stroke)) return;
     const hasPressure = stroke.points.some((point) => point.pressure !== undefined);
     const outline = getStroke(
-      stroke.points.map((point) => [point.x, point.y, point.pressure ?? 0.5]),
+      stroke.points.map((point) => displayedPoint(point, stroke)).map((point) => [point.x, point.y, point.pressure ?? 0.5]),
       {
         size: stroke.width,
         thinning: 0.6,
@@ -591,27 +860,32 @@ import { getStroke } from "/assets/perfect-freehand.js";
   function scheduleRepaint() {
     if (!repaintFrame) repaintFrame = requestAnimationFrame(repaint);
   }
+  repaintDrawing = repaint;
+  // Vertical stage expansion changes the centered design-area offset. Rebuild
+  // paths whenever the SVG viewport changes so normalized slide strokes track
+  // that offset just like positioned images do.
+  new ResizeObserver(() => scheduleRepaint()).observe(canvas);
 
-  // SVG keeps its paths in CSS-pixel coordinates, so resizing only changes the
-  // visible vector viewport and never scales or rasterizes existing strokes.
-  function resizeCanvas() {}
+  function resizeCanvas() { scheduleRepaint(); }
   canvas.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     if (event.pointerType === "pen") lastPenTime = performance.now();
     if (event.button !== 0 || isPalmEvent(event) || activeStroke || eraserPointerId !== null) return;
     canvas.setPointerCapture(event.pointerId);
-    const point = canvasPoint(event);
+    const canvasPosition = canvasPoint(event);
     if (eraserEnabled) {
+      const point = canvasPosition;
       eraserPointerId = event.pointerId;
       erasedDuringGesture.clear();
       eraseAtPoint(point);
       return;
     }
+    const point = pointForSurface(canvasPosition);
     const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-    activeStroke = { id, pointerId: event.pointerId, pointerType: event.pointerType, color: penColor, width: brushWidths[brushSizeIndex], mode: "draw", points: [point] };
+    activeStroke = { id, pointerId: event.pointerId, pointerType: event.pointerType, color: penColor, width: brushWidths[brushSizeIndex], mode: "draw", surface: drawingOverSlide ? "slide" : "canvas", slideIndex: drawingOverSlide ? slideIndex : undefined, normalized: drawingOverSlide, points: [point] };
     strokes.set(id, activeStroke);
     paintStroke(activeStroke);
-    socket.emit("draw:start", { id, color: activeStroke.color, width: activeStroke.width, mode: activeStroke.mode, point });
+    socket.emit("draw:start", { id, color: activeStroke.color, width: activeStroke.width, mode: activeStroke.mode, surface: activeStroke.surface, slideIndex: activeStroke.slideIndex, normalized: activeStroke.normalized, point });
   }, { passive: false });
   canvas.addEventListener("pointermove", (event) => {
     if (event.pointerType === "pen") lastPenTime = performance.now();
@@ -629,7 +903,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
     const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
     // Some Safari/iPadOS versions expose getCoalescedEvents() but return an
     // empty array. Always fall back to the current event so a move is never lost.
-    const points = (coalesced.length ? coalesced : [event]).map(canvasPoint);
+    const points = (coalesced.length ? coalesced : [event]).map(canvasPoint).map(pointForSurface);
     activeStroke.points.push(...points);
     scheduleRepaint();
     // Send the long-standing single-point event for broad Socket.IO/browser

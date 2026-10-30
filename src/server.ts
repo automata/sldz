@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -76,9 +76,9 @@ function validPoint(value: unknown): value is Point {
   const point = value as Point;
   return Number.isFinite(point.x)
     && Number.isFinite(point.y)
-    && point.x >= 0
+    && point.x >= -100_000
     && point.x <= 100_000
-    && point.y >= 0
+    && point.y >= -100_000
     && point.y <= 100_000
     && (point.pressure === undefined || (Number.isFinite(point.pressure) && point.pressure >= 0 && point.pressure <= 1));
 }
@@ -97,7 +97,45 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   const perfectFreehandEntry = path.resolve(path.dirname(require.resolve("perfect-freehand")), "..", "esm", "index.mjs");
 
   const assetsDirectory = path.join(options.cwd, "assets");
+  const layoutPath = options.markdownPath.replace(/\.[^.]+$/, "") + ".json";
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+  type ImageLayout = Record<string, { x: number; y: number; width?: number }>;
+  let storedLayout: { images?: ImageLayout; drawings?: unknown[] } = {};
+  try {
+    storedLayout = JSON.parse(await readFile(layoutPath, "utf8")) as typeof storedLayout;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  let layoutImages: ImageLayout = storedLayout.images && typeof storedLayout.images === "object" ? storedLayout.images : {};
+  const storedStrokes: Stroke[] = [];
+  let storedPointCount = 0;
+  for (const candidate of Array.isArray(storedLayout.drawings) ? storedLayout.drawings : []) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const value = candidate as Partial<Stroke>;
+    if (typeof value.id !== "string" || !Array.isArray(value.points)) continue;
+    const points = value.points.filter(validPoint).slice(0, MAX_POINTS - storedPointCount);
+    if (!points.length) continue;
+    storedStrokes.push({
+      id: value.id.slice(0, 200),
+      color: typeof value.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color) ? value.color : "#ffffff",
+      width: Math.min(40, Math.max(1, Number(value.width) || 4)),
+      mode: "draw",
+      surface: value.surface === "slide" ? "slide" : "canvas",
+      slideIndex: value.surface === "slide" && Number.isInteger(value.slideIndex) ? Math.max(0, Number(value.slideIndex)) : undefined,
+      normalized: value.surface === "slide" && value.normalized === true,
+      points,
+    });
+    storedPointCount += points.length;
+    if (storedStrokes.length >= MAX_STROKES || storedPointCount >= MAX_POINTS) break;
+  }
+  const session: DeckSession = { id: options.presentationId, cwd: options.cwd, strokes: storedStrokes };
+  let layoutWrite = Promise.resolve();
+  const persistLayout = () => {
+    const contents = JSON.stringify({ images: layoutImages, drawings: session.strokes }, null, 2) + "\n";
+    layoutWrite = layoutWrite.catch(() => undefined).then(() => writeFile(layoutPath, contents));
+    return layoutWrite;
+  };
+  const scheduleLayoutPersist = () => { void persistLayout().catch((error) => console.error("Unable to save slide state:", error)); };
 
   app.use(express.json({ limit: "2mb" }));
   app.use("/assets", express.static(publicDirectory));
@@ -121,6 +159,44 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     await writeFile(options.markdownPath, request.body.markdown);
     return response.json({ ok: true });
   });
+  app.get("/api/layout", async (request, response) => {
+    if (request.query.presentationId !== options.presentationId) return response.status(403).json({ error: "Forbidden" });
+    return response.json({ images: layoutImages, drawings: session.strokes });
+  });
+  app.put("/api/layout", async (request, response) => {
+    if (request.body?.presentationId !== options.presentationId || !request.body?.images || typeof request.body.images !== "object") {
+      return response.status(403).json({ error: "Forbidden" });
+    }
+    const images: ImageLayout = {};
+    for (const [key, value] of Object.entries(request.body.images as Record<string, { x?: unknown; y?: unknown; width?: unknown }>)) {
+      if (typeof value?.x !== "number" || typeof value?.y !== "number" || !Number.isFinite(value.x) || !Number.isFinite(value.y)) continue;
+      const position: { x: number; y: number; width?: number } = { x: Math.max(-4, Math.min(4, value.x)), y: Math.max(-4, Math.min(4, value.y)) };
+      if (typeof value.width === "number" && Number.isFinite(value.width)) position.width = Math.max(0.05, Math.min(1, value.width));
+      images[key.slice(0, 500)] = position;
+    }
+    layoutImages = images;
+    await persistLayout();
+    return response.json({ ok: true });
+  });
+  app.delete("/api/images", async (request, response) => {
+    if (request.body?.presentationId !== options.presentationId || typeof request.body?.src !== "string") {
+      return response.status(403).json({ error: "Forbidden" });
+    }
+    const markdown = await readFile(options.markdownPath, "utf8");
+    const sections = markdown.replace(/\r\n?/g, "\n").split(/^\s*---+\s*$/gm);
+    const nonEmptySections = sections.map((section, index) => section.trim() ? index : -1).filter((index) => index >= 0);
+    const requestedSlide = Number.parseInt(request.body.slideIndex, 10);
+    const sectionIndex = nonEmptySections[Math.max(0, Math.min(nonEmptySections.length - 1, requestedSlide || 0))];
+    const escapedSource = request.body.src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const imagePattern = new RegExp(`!\\[[^\\]]*\\]\\(\\s*${escapedSource}(?:\\s+["'][^"']*["'])?\\s*\\)`, "g");
+    sections[sectionIndex] = sections[sectionIndex].replace(imagePattern, "").replace(/\n{3,}/g, "\n\n");
+    const updatedMarkdown = sections.join("\n\n---\n\n");
+    await writeFile(options.markdownPath, updatedMarkdown);
+    if (request.body.src.startsWith("assets/") && !updatedMarkdown.includes(request.body.src)) {
+      await unlink(path.join(assetsDirectory, path.basename(request.body.src))).catch(() => undefined);
+    }
+    return response.json({ ok: true });
+  });
   app.post("/api/images", upload.single("image"), async (request, response) => {
     if (request.body?.presentationId !== options.presentationId || !request.file?.mimetype.startsWith("image/")) {
       return response.status(400).json({ error: "Invalid image upload" });
@@ -136,20 +212,16 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     const requestedSlide = Number.parseInt(request.body.slideIndex, 10);
     const sectionIndex = nonEmptySections[Math.max(0, Math.min(nonEmptySections.length - 1, requestedSlide || 0))];
     const alt = path.basename(original, path.extname(original)).replace(/[\]\\]/g, "") || "image";
-    const imageMarkdown = `![${alt}](assets/${filename})`;
+    const imageSource = `assets/${filename}`;
+    const imageMarkdown = `![${alt}](${imageSource})`;
     sections[sectionIndex] = `${sections[sectionIndex].trimEnd()}\n\n${imageMarkdown}\n`;
     await writeFile(options.markdownPath, sections.join("\n\n---\n\n"));
-    return response.json({ url: `/p/assets/${encodeURIComponent(filename)}`, markdown: imageMarkdown, alt });
+    return response.json({ url: `/p/assets/${encodeURIComponent(filename)}`, src: imageSource, markdown: imageMarkdown, alt });
   });
   const indexHtml = renderIndex(options.title, options.presentationId, options.slideCount);
   app.get(["/", "/index.html"], (_request, response) => response.type("html").send(indexHtml));
   app.use((_request, response) => response.status(404).send("Presentation not found"));
 
-  const session: DeckSession = {
-    id: options.presentationId,
-    cwd: options.cwd,
-    strokes: [],
-  };
   // Drawing is collaborative, but every browser gets an isolated shell.
   const terminals = new Map<string, TerminalProcess>();
   const terminalsStarting = new Map<string, Promise<TerminalProcess>>();
@@ -184,6 +256,9 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
         color: typeof data.color === "string" && /^#[0-9a-f]{6}$/i.test(data.color) ? data.color : "#f7c948",
         width: Math.min(40, Math.max(1, Number(data.width) || 4)),
         mode: data.mode === "erase" ? "erase" : "draw",
+        surface: data.surface === "slide" ? "slide" : "canvas",
+        slideIndex: data.surface === "slide" && Number.isInteger(data.slideIndex) ? Math.max(0, Number(data.slideIndex)) : undefined,
+        normalized: data.surface === "slide" && data.normalized === true,
         points: [data.point],
       };
       session.strokes.push(stroke);
@@ -206,6 +281,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       if (typeof socket.data.strokeId === "string") {
         socket.broadcast.to(session.id).emit("draw:end", socket.data.strokeId);
         delete socket.data.strokeId;
+        scheduleLayoutPersist();
       }
     });
 
@@ -221,7 +297,10 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
         removed.push({ stroke, index });
         return false;
       });
-      if (removed.length) rememberDrawingAction({ type: "erase", strokes: removed });
+      if (removed.length) {
+        rememberDrawingAction({ type: "erase", strokes: removed });
+        scheduleLayoutPersist();
+      }
       for (const { stroke } of removed) io.to(session.id).emit("draw:remove", stroke.id);
     });
 
@@ -230,12 +309,14 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
         const action = drawingHistory.pop()!;
         if (action.type === "erase") {
           for (const { stroke, index } of action.strokes) session.strokes.splice(Math.min(index, session.strokes.length), 0, stroke);
+          scheduleLayoutPersist();
           io.to(session.id).emit("drawing:init", session.strokes);
           return;
         }
         const index = session.strokes.findIndex((stroke) => stroke.id === action.id);
         if (index < 0) continue;
         const [stroke] = session.strokes.splice(index, 1);
+        scheduleLayoutPersist();
         io.to(session.id).emit("draw:remove", stroke.id);
         return;
       }
@@ -246,6 +327,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       for (const client of io.sockets.sockets.values()) {
         if (Array.isArray(client.data.drawingHistory)) client.data.drawingHistory.length = 0;
       }
+      scheduleLayoutPersist();
       io.to(session.id).emit("draw:clear");
     });
 
@@ -289,6 +371,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     });
 
     socket.on("disconnect", () => {
+      if (typeof socket.data.strokeId === "string") scheduleLayoutPersist();
       terminals.get(socket.id)?.kill();
       terminals.delete(socket.id);
     });
@@ -307,6 +390,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       for (const terminal of terminals.values()) terminal.kill();
       terminals.clear();
       io.close();
+      await layoutWrite.catch(() => undefined);
       await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     },
   };

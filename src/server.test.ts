@@ -54,7 +54,24 @@ test("broadcasts complete drawing strokes to other clients", async () => {
   imageForm.append("image", new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }), "test.png");
   const imageResponse = await fetch(`${url}/api/images`, { method: "POST", body: imageForm });
   assert.equal(imageResponse.status, 200);
+  const imageResult = await imageResponse.json() as { src: string };
   assert.match(await readFile(markdownPath, "utf8"), /!\[test\]\(assets\//);
+
+  const layoutResponse = await fetch(`${url}/api/layout`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentationId, images: { "0:assets/test.png:0": { x: 0.25, y: 0.5 } } }),
+  });
+  assert.equal(layoutResponse.status, 200);
+  assert.match(await readFile(path.join(testDirectory, "slides.json"), "utf8"), /0\.25/);
+
+  const deleteResponse = await fetch(`${url}/api/images`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presentationId, slideIndex: 0, src: imageResult.src }),
+  });
+  assert.equal(deleteResponse.status, 200);
+  assert.doesNotMatch(await readFile(markdownPath, "utf8"), /!\[test\]\(assets\//);
 
   const first = io(url, { auth: { presentationId }, transports: ["websocket"] });
   const second = io(url, { auth: { presentationId }, transports: ["websocket"] });
@@ -86,6 +103,18 @@ test("broadcasts complete drawing strokes to other clients", async () => {
     const restored = once<Array<{ id: string }>>(second, "drawing:init");
     first.emit("draw:undo");
     assert.ok((await restored).some((item) => item.id === erasableStroke.id));
+
+    const slideStart = once<{ id: string; surface: string }>(second, "draw:start");
+    first.emit("draw:start", { id: "slide-stroke", color: "#ffffff", width: 4, surface: "slide", slideIndex: 1, normalized: true, point: { x: 0.25, y: 0.5 } });
+    assert.equal((await slideStart).surface, "slide");
+    const slideEnd = once<string>(second, "draw:end");
+    first.emit("draw:end");
+    await slideEnd;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const savedLayout = JSON.parse(await readFile(path.join(testDirectory, "slides.json"), "utf8")) as { images: object; drawings: Array<{ surface: string }> };
+    assert.ok(Object.keys(savedLayout.images).length > 0);
+    assert.ok(savedLayout.drawings.some((stroke) => stroke.surface === "canvas"));
+    assert.ok(savedLayout.drawings.some((stroke) => stroke.surface === "slide"));
   } finally {
     first.close();
     second.close();

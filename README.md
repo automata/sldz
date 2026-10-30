@@ -32,7 +32,9 @@ Navigation: arrow keys, space, Page Up/Down, Home, and End. Press `D` for the ca
 
 - Open the `◎` pane, enter a URL, and press Enter to embed a website (sites may opt out of iframe embedding).
 - Open `</>` to edit the source Markdown. Click it again or press `Cmd/Ctrl+S` to save and reload.
-- Drop image files directly onto the current slide to copy them into `assets/` and append Markdown image syntax to the source file.
+- Drop image files directly onto the current slide to copy them into `assets/` and append Markdown image syntax to the source file. Drag rendered images to reposition them, select one to resize it from any edge or corner, or press Delete/Backspace to remove it from the slide and source. Normalized dimensions and positions are saved beside the deck (`s1.md` → `s1.json`).
+- Use the `◫` control to toggle the collaborative vector canvas over the current slide without opening a pane. A separate palette and drawing toolbar appears at the top; overlay strokes are stored per slide and synchronize between clients.
+- Drawing-pane strokes and per-slide overlay strokes persist alongside image layouts in the companion JSON file (`s1.md` → `s1.json`).
 
 > **Security:** the share URL is a secret capability. Anyone with it can run shell commands in the Markdown file's directory. Do not expose the server to an untrusted network. Use `--host 127.0.0.1` for local-only use.
 

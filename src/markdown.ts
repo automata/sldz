@@ -28,7 +28,7 @@ export function renderSlides(markdown: string): Slide[] {
   renderer.image = ({ href, title, text }) => {
     const safeHref = escapeHtml(href);
     const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
-    return `<figure class="markdown-image"><img src="${safeHref}" alt="${escapeHtml(text)}"${titleAttribute}><figcaption>![${escapeHtml(text)}](${safeHref})</figcaption></figure>`;
+    return `<figure class="markdown-image"><img src="${safeHref}" alt="${escapeHtml(text)}"${titleAttribute}></figure>`;
   };
   marked.setOptions({ gfm: true, breaks: true, renderer });
   return splitSlides(markdown).map((source, index) => ({

@@ -9,6 +9,9 @@ export interface Stroke {
   color: string;
   width: number;
   mode?: "draw" | "erase";
+  surface?: "canvas" | "slide";
+  slideIndex?: number;
+  normalized?: boolean;
   points: Point[];
 }
 
