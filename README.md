@@ -28,7 +28,7 @@ Options:
 --open               Open the local URL
 ```
 
-Navigation: arrow keys, space, Page Up/Down, Home, and End. Press `D` for the canvas, `T` for the terminal, and `F` for fullscreen.
+Navigation: arrow keys, space, Page Up/Down, Home, and End. Press `D` for the canvas, `T` for the terminal, and `F` for fullscreen. Use `◐` to cycle between dark, light, and lime themes; the choice is saved in the browser.
 
 - Open the `◎` pane, enter a URL, and press Enter to embed a website (sites may opt out of iframe embedding).
 - Open `</>` to edit the source Markdown. Click it again or press `Cmd/Ctrl+S` to save and reload.

@@ -58,6 +58,7 @@ export function renderDocument(title: string, slides: Slide[], presentationId: s
     <button id="iframe-toggle" type="button" title="Web pane" aria-label="Web pane" aria-pressed="false">◎</button>
     <button id="markdown-edit-toggle" type="button" title="Edit Markdown" aria-label="Edit Markdown" aria-pressed="false">&lt;/&gt;</button>
     <button id="slide-maximize" type="button" title="Maximize slide" aria-label="Maximize slide" aria-pressed="false">□</button>
+    <button id="theme-toggle" type="button" title="Switch to light theme" aria-label="Switch to light theme">◐</button>
     <button id="pane-position" type="button" title="Move panes to the left" aria-label="Move panes to the left">←</button>
     <button id="fullscreen" type="button" title="Browser fullscreen (F)" aria-label="Present">⛶</button>
   </nav>

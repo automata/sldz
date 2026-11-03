@@ -13,12 +13,17 @@
 }
 
 :root {
-  --bg: #161616;
-  --surface: #202020;
-  --surface-2: #2b2b2b;
-  --text: #f0f0f0;
-  --muted: #999;
-  --accent: #c8c8c8;
+  --theme-background: #000000;
+  --theme-surface: #161616;
+  --theme-text: #f0f0f0;
+  --theme-muted: #777777;
+  --theme-border: #3a4253;
+  --bg: var(--theme-background);
+  --surface: var(--theme-surface);
+  --surface-2: var(--theme-border);
+  --text: var(--theme-text);
+  --muted: var(--theme-muted);
+  --accent: var(--theme-text);
   --mosaic-width: clamp(340px, 38vw, 620px);
   --viewport-height: 100vh;
   --mosaic-height: clamp(240px, 38svh, 480px);
@@ -28,6 +33,22 @@
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --theme-background: #ffffff;
+  --theme-surface: #f1f1f1;
+  --theme-text: #171717;
+  --theme-muted: #626262;
+  --theme-border: #a0a0a0;
+}
+:root[data-theme="lime"] {
+  color-scheme: light;
+  --theme-background: #caff8a;
+  --theme-surface: #b5e87b;
+  --theme-text: #000000;
+  --theme-muted: #39552b;
+  --theme-border: #6e9850;
 }
 @supports (height: 100svh) { :root { --viewport-height: 100svh; } }
 
@@ -136,6 +157,7 @@ th { color: var(--accent); }
 .slide-content th:last-child::after, .slide-content td:last-child::after { content: " |"; }
 .slide-content hr { height: auto; border: 0; color: #777; font: 1rem "DM Mono", ui-monospace, monospace; text-align: left; }
 .slide-content hr::after { content: "---"; }
+
 img { display: block; max-width: 100%; max-height: 650px; margin: auto; border-radius: 10px; }
 .markdown-image { margin: 1em 0; }
 .markdown-image { cursor: grab; touch-action: none; }
@@ -456,7 +478,7 @@ body.maximized-slide.panes-bottom .tools {
   flex-direction: row;
   transform: translateX(-50%);
 }
-body.maximized-slide .tools button:not(#slide-maximize):not(#slide-drawing-toggle) { display: none; }
+body.maximized-slide .tools button:not(#slide-maximize):not(#slide-drawing-toggle):not(#theme-toggle) { display: none; }
 body.maximized-slide .slide-number { right: 22px !important; bottom: 14px !important; }
 body.maximized-slide .progress { bottom: 0 !important; }
 body.maximized-draw .deck,
@@ -495,6 +517,25 @@ body.maximized-iframe .iframe-window {
 body.maximized-draw .draw-window > .pane-resizer,
 body.maximized-terminal .terminal-window > .pane-resizer,
 body.maximized-iframe .iframe-window > .pane-resizer { display: none; }
+
+/* Interface and slide colors derive from the five theme colors. Drawing swatches
+   and embedded website content intentionally keep their own colors. */
+.deck, .slide, .floating-pane, #draw-panel, #drawing-canvas, #terminal-panel, #iframe-panel,
+.tools button, .slide-number button, .iframe-address input, .iframe-address button, #markdown-editor { background-color: var(--theme-background); }
+#drawing-canvas.is-slide-overlay { background: transparent; }
+.slide-content, #markdown-editor, .iframe-address input { color: var(--theme-text); }
+.slide-content strong, .slide-content pre code, .slide-content code, .slide-content blockquote { color: var(--theme-text); }
+.slide-content code, .slide-content pre { background: var(--theme-surface); border-color: var(--theme-border); }
+.slide-content :is(h1, h2, h3, h4, h5, h6)::before,
+.slide-content :is(li, blockquote > p, pre, code, strong, em, del, a, th, td)::before,
+.slide-content :is(pre, code, strong, em, del, a, th, td)::after,
+.slide-content hr { color: var(--theme-muted); }
+.slide-content th, .slide-content td, .slide-content blockquote { border-color: var(--theme-border); }
+.tools button, .slide-number button, .floating-pane, .pane-controls button,
+.slide-drawing-controls button, .iframe-address input, .iframe-address button { border-color: var(--theme-border); color: var(--theme-muted); }
+.tools button:hover, .tools button[aria-pressed="true"] { background: var(--theme-border); color: var(--theme-background); }
+:root:is([data-theme="light"], [data-theme="lime"]) .color-swatch[data-color="#ffffff"],
+:root:is([data-theme="light"], [data-theme="lime"]) .overlay-color-swatch[data-color="#ffffff"] { background: var(--theme-text); }
 
 @media print {
   html, body { overflow: visible; background: white; color: black; }

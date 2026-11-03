@@ -2,6 +2,10 @@ import { getStroke } from "/assets/perfect-freehand.js";
 
 (() => {
   const config = window.__SLDZ__;
+  const themes = ["dark", "light", "lime"];
+  let themeIndex = 0;
+  try { themeIndex = Math.max(0, themes.indexOf(localStorage.getItem("sldz-theme"))); } catch { /* storage may be unavailable */ }
+  document.documentElement.dataset.theme = themes[themeIndex];
   const slides = [...document.querySelectorAll(".slide")];
   const deck = document.getElementById("deck");
   const currentLabel = document.getElementById("current-slide");
@@ -847,7 +851,8 @@ import { getStroke } from "/assets/perfect-freehand.js";
       canvas.append(path);
     }
     path.setAttribute("d", outlineToPath(outline));
-    path.setAttribute("fill", stroke.mode === "erase" ? "#000000" : stroke.color);
+    const themeForegroundStroke = stroke.color === "#ffffff" || stroke.color === "#171717";
+    path.setAttribute("fill", stroke.mode === "erase" ? "var(--theme-background)" : themeForegroundStroke ? "var(--theme-text)" : stroke.color);
   }
 
   let repaintFrame = 0;
@@ -882,7 +887,8 @@ import { getStroke } from "/assets/perfect-freehand.js";
     }
     const point = pointForSurface(canvasPosition);
     const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-    activeStroke = { id, pointerId: event.pointerId, pointerType: event.pointerType, color: penColor, width: brushWidths[brushSizeIndex], mode: "draw", surface: drawingOverSlide ? "slide" : "canvas", slideIndex: drawingOverSlide ? slideIndex : undefined, normalized: drawingOverSlide, points: [point] };
+    const strokeColor = penColor === "#ffffff" && themes[themeIndex] !== "dark" ? "#171717" : penColor;
+    activeStroke = { id, pointerId: event.pointerId, pointerType: event.pointerType, color: strokeColor, width: brushWidths[brushSizeIndex], mode: "draw", surface: drawingOverSlide ? "slide" : "canvas", slideIndex: drawingOverSlide ? slideIndex : undefined, normalized: drawingOverSlide, points: [point] };
     strokes.set(id, activeStroke);
     paintStroke(activeStroke);
     socket.emit("draw:start", { id, color: activeStroke.color, width: activeStroke.width, mode: activeStroke.mode, surface: activeStroke.surface, slideIndex: activeStroke.slideIndex, normalized: activeStroke.normalized, point });
@@ -973,6 +979,29 @@ import { getStroke } from "/assets/perfect-freehand.js";
   let terminal;
   let fitAddon;
   let terminalOpened = false;
+  const themeButton = document.getElementById("theme-toggle");
+  function terminalTheme() {
+    const colors = getComputedStyle(document.documentElement);
+    const color = (name) => colors.getPropertyValue(name).trim();
+    return { background: color("--theme-background"), foreground: color("--theme-text"), cursor: color("--theme-text"), selectionBackground: color("--theme-border") };
+  }
+  function updateThemeButton() {
+    const next = themes[(themeIndex + 1) % themes.length];
+    themeButton.title = `Switch to ${next} theme`;
+    themeButton.setAttribute("aria-label", themeButton.title);
+    document.querySelectorAll('.color-swatch[data-color="#ffffff"], .overlay-color-swatch[data-color="#ffffff"]').forEach((swatch) => {
+      swatch.title = themes[themeIndex] === "dark" ? "White" : "Black";
+      swatch.setAttribute("aria-label", swatch.title);
+    });
+  }
+  updateThemeButton();
+  themeButton.addEventListener("click", () => {
+    themeIndex = (themeIndex + 1) % themes.length;
+    document.documentElement.dataset.theme = themes[themeIndex];
+    try { localStorage.setItem("sldz-theme", themes[themeIndex]); } catch { /* storage may be unavailable */ }
+    if (terminal) terminal.options.theme = terminalTheme();
+    updateThemeButton();
+  });
   terminalFontButton.addEventListener("click", () => {
     terminalFontSizeIndex = (terminalFontSizeIndex + 1) % terminalFontSizes.length;
     const level = sizeLevels[terminalFontSizeIndex];
@@ -999,7 +1028,7 @@ import { getStroke } from "/assets/perfect-freehand.js";
         scrollOnUserInput: true,
         fontFamily: '"0xProto Nerd Font Mono", "NerdSymbols", "Apple Color Emoji", "Segoe UI Emoji", monospace',
         fontSize: terminalFontSizes[terminalFontSizeIndex],
-        theme: { background: "#000000", foreground: "#d0d0d0", cursor: "#ffffff", selectionBackground: "#444444" },
+        theme: terminalTheme(),
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
